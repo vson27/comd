@@ -1,0 +1,553 @@
+#include <bits/stdc++.h>
+using namespace std;
+
+struct Prod { string lhs; vector<string> rhs; };
+struct Item { int p, dot; string la; 
+    bool operator==(Item const&o) const { return p==o.p && dot==o.dot && la==o.la; }
+};
+struct HashItem { size_t operator()(Item const&i) const {
+    return i.p*1315423911u ^ (i.dot<<7) ^ hash<string>{}(i.la);
+}};
+
+int main(){
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    // -------------------------------
+    // 1. Define Grammar (fixed)
+    // -------------------------------
+    vector<Prod> P = {
+        {"E'", {"E"}},      // 0: augmented
+        {"E", {"T","X"}},   // 1
+        {"X", {"+","T","X"}}, // 2
+        {"X", {}},            // 3: epsilon
+        {"T", {"F","Y"}},   // 4
+        {"Y", {"*","F","Y"}}, // 5
+        {"Y", {}},            // 6: epsilon
+        {"F", {"(","E",")"}}, // 7
+        {"F", {"id"}}        // 8
+    };
+
+    string START = "E";
+
+    // Non-terminals:
+    unordered_set<string> nonterm = {"E'","E","X","T","Y","F"};
+    // Terminals:
+    unordered_set<string> term = {"+","*","(",")","id","$"};
+
+    // -------------------------------
+    // 2. FIRST sets
+    // -------------------------------
+    unordered_map<string,unordered_set<string>> FIRST;
+
+    for(auto&t:term) FIRST[t].insert(t);
+    for(auto&nt:nonterm) FIRST[nt];
+
+    bool changed = true;
+    while(changed){
+        changed=false;
+        for(auto&pr:P){
+            auto A = pr.lhs;
+            auto rhs = pr.rhs;
+
+            // epsilon
+            if(rhs.empty()){
+                if(!FIRST[A].count("#")){
+                    FIRST[A].insert("#");
+                    changed=true;
+                }
+                continue;
+            }
+
+            bool eps = true;
+            for(auto &X:rhs){
+                if(term.count(X)){
+                    if(!FIRST[A].count(X)){
+                        FIRST[A].insert(X);
+                        changed=true;
+                    }
+                    eps=false; break;
+                }
+                for(auto&t: FIRST[X]) if(t!="#"){
+                    if(!FIRST[A].count(t)){
+                        FIRST[A].insert(t);
+                        changed=true;
+                    }
+                }
+                if(!FIRST[X].count("#")){
+                    eps=false; break;
+                }
+            }
+            if(eps){
+                if(!FIRST[A].count("#")){
+                    FIRST[A].insert("#");
+                    changed=true;
+                }
+            }
+        }
+    }
+
+    auto FIRST_seq = [&](vector<string> seq){
+        unordered_set<string> out;
+        bool eps=true;
+        for(auto &X:seq){
+            if(term.count(X)){
+                out.insert(X);
+                eps=false; break;
+            }
+            for(auto&t:FIRST[X]) if(t!="#") out.insert(t);
+            if(!FIRST[X].count("#")){
+                eps=false; break;
+            }
+        }
+        if(eps) out.insert("#");
+        return out;
+    };
+
+    // -------------------------------
+    // 3. Closure()
+    // -------------------------------
+    using IS = unordered_set<Item,HashItem>;
+
+    function<IS(IS)> closure = [&](IS I){
+        IS C = I;
+        queue<Item>q;
+        for(auto&i:I) q.push(i);
+
+        while(!q.empty()){
+            Item it = q.front(); q.pop();
+            auto &pr = P[it.p];
+
+            if(it.dot >= pr.rhs.size()) continue;
+
+            string B = pr.rhs[it.dot];
+            if(!nonterm.count(B)) continue;
+
+            vector<string> beta;
+            for(int k=it.dot+1;k<pr.rhs.size();k++) beta.push_back(pr.rhs[k]);
+            beta.push_back(it.la);
+
+            auto fs = FIRST_seq(beta);
+
+            for(int pi=0;pi<P.size();pi++){
+                if(P[pi].lhs != B) continue;
+                for(auto &f : fs){
+                    string look = (f=="#"? it.la : f);
+                    Item ni = {pi,0,look};
+                    if(!C.count(ni)){
+                        C.insert(ni);
+                        q.push(ni);
+                    }
+                }
+            }
+        }
+        return C;
+    };
+
+    auto GOTO = [&](IS I, string X){
+        IS J;
+        for(auto &it:I){
+            auto &pr=P[it.p];
+            if(it.dot<pr.rhs.size() && pr.rhs[it.dot]==X){
+                J.insert({it.p, it.dot+1, it.la});
+            }
+        }
+        return closure(J);
+    };
+
+    // -------------------------------
+    // 4. Build Canonical LR(1) States
+    // -------------------------------
+    vector<IS> C;
+    map<string,int> idx;
+
+    auto key = [&](IS S){
+        vector<string>v;
+        for(auto &it:S){
+            v.push_back(to_string(it.p)+"."+to_string(it.dot)+"."+it.la);
+        }
+        sort(v.begin(),v.end());
+        string r;
+        for(auto &x:v) r+=x+"|";
+        return r;
+    };
+
+    IS I0;
+    I0.insert({0,0,"$"});
+    I0 = closure(I0);
+
+    C.push_back(I0);
+    idx[key(I0)] = 0;
+
+    queue<int>Q;
+    Q.push(0);
+
+    unordered_set<string> symbols;
+    for(auto &t:term) symbols.insert(t);
+    for(auto &nt:nonterm) symbols.insert(nt);
+
+    while(!Q.empty()){
+        int i=Q.front(); Q.pop();
+        for(auto &X : symbols){
+            IS J = GOTO(C[i],X);
+            if(J.empty()) continue;
+            string k = key(J);
+            if(!idx.count(k)){
+                idx[k]=C.size();
+                C.push_back(J);
+                Q.push(idx[k]);
+            }
+        }
+    }
+
+    // -------------------------------
+    // 5. ACTION and GOTO tables
+    // -------------------------------
+    map<pair<int,string>, string> ACTION;
+    map<pair<int,string>, int> G;
+
+    bool conflict=false;
+
+    auto isTerm = [&](string s){ return term.count(s); };
+
+    // Fill shift / goto
+    for(int i=0;i<C.size();i++){
+        for(auto &X:symbols){
+            IS J = GOTO(C[i],X);
+            if(J.empty()) continue;
+            int j=idx[key(J)];
+            if(isTerm(X)){
+                ACTION[{i,X}] = "s"+to_string(j);
+            } else {
+                G[{i,X}] = j;
+            }
+        }
+    }
+
+    // Reductions
+    for(int i=0;i<C.size();i++){
+        for(auto &it:C[i]){
+            auto &pr=P[it.p];
+            if(it.dot == pr.rhs.size()){
+                if(pr.lhs=="E'" && it.la=="$"){
+                    ACTION[{i,"$"}] = "acc";
+                } else {
+                    string r = "r"+to_string(it.p);
+                    auto keyp = make_pair(i,it.la);
+                    if(ACTION.count(keyp) && ACTION[keyp]!=r){
+                        conflict = true;
+                    }
+                    ACTION[keyp] = r;
+                }
+            }
+        }
+    }
+
+    // -------------------------------
+    // 6. Print tables
+    // -------------------------------
+    cout << "\n=== ACTION TABLE ===\n";
+    for(auto&a:ACTION)
+        cout << "("<<a.first.first<<","<<a.first.second<<") = "<<a.second<<"\n";
+
+    cout << "\n=== GOTO TABLE ===\n";
+    for(auto&g:G)
+        cout << "("<<g.first.first<<","<<g.first.second<<") = "<<g.second<<"\n";
+
+    if(conflict){
+        cout << "\nGrammar is NOT LR(1) (conflict found)\n";
+        return 0;
+    }
+
+    cout << "\nGrammar IS LR(1).\n";
+
+    // -------------------------------
+    // 7. PARSE INPUT STRING
+    // -------------------------------
+    cout << "\nEnter input (space-separated): ";
+    vector<string> input;
+    string tok;
+    while(cin>>tok){
+        if(tok=="END") break;
+        input.push_back(tok);
+        if(cin.peek()=='\n') break;
+    }
+    input.push_back("$");
+
+    vector<int> st;
+    vector<string> sym;
+
+    st.push_back(0);
+
+    int ip=0;
+    cout << "\n--- PARSING TRACE ---\n";
+
+    while(true){
+        int s = st.back();
+        string a = input[ip];
+
+        cout << "State="<<s<<"  NextToken="<<a<<"\n";
+
+        if(!ACTION.count({s,a})){
+            cout << "Error: no ACTION["<<s<<","<<a<<"]\n";
+            cout << "Rejected.\n";
+            return 0;
+        }
+
+        string act = ACTION[{s,a}];
+
+        if(act=="acc"){
+            cout << "ACCEPTED.\n";
+            return 0;
+        }
+
+        if(act[0]=='s'){
+            int t = stoi(act.substr(1));
+            sym.push_back(a);
+            st.push_back(t);
+            ip++;
+        }
+        else if(act[0]=='r'){
+            int pid = stoi(act.substr(1));
+            auto &pr = P[pid];
+            int k = pr.rhs.size();
+            for(int j=0;j<k;j++){
+                sym.pop_back();
+                st.pop_back();
+            }
+            int s2 = st.back();
+            sym.push_back(pr.lhs);
+            int goto_state = G[{s2,pr.lhs}];
+            st.push_back(goto_state);
+        }
+    }
+}
+
+INPUTS:
+
+anirudh@Ani-LOQ:~$ echo "id + id * id END" | ./lr1 2>&1 | tee run_output.txt
+
+=== ACTION TABLE ===
+(0,() = s3
+(0,id) = s5
+(1,$) = r3
+(1,+) = s7
+(2,$) = r6
+(2,*) = s9
+(2,+) = r6
+(3,() = s12
+(3,id) = s14
+(4,$) = acc
+(5,$) = r8
+(5,*) = r8
+(5,+) = r8
+(6,$) = r1
+(7,() = s3
+(7,id) = s5
+(8,$) = r4
+(8,+) = r4
+(9,() = s3
+(9,id) = s5
+(10,)) = r3
+(10,+) = s18
+(11,)) = r6
+(11,*) = s20
+(11,+) = r6
+(12,() = s12
+(12,id) = s14
+(13,)) = s22
+(14,)) = r8
+(14,*) = r8
+(14,+) = r8
+(15,$) = r3
+(15,+) = s7
+(16,$) = r6
+(16,*) = s9
+(16,+) = r6
+(17,)) = r1
+(18,() = s12
+(18,id) = s14
+(19,)) = r4
+(19,+) = r4
+(20,() = s12
+(20,id) = s14
+(21,)) = s27
+(22,$) = r7
+(22,*) = r7
+(22,+) = r7
+(23,$) = r2
+(24,$) = r5
+(24,+) = r5
+(25,)) = r3
+(25,+) = s18
+(26,)) = r6
+(26,*) = s20
+(26,+) = r6
+(27,)) = r7
+(27,*) = r7
+(27,+) = r7
+(28,)) = r2
+(29,)) = r5
+(29,+) = r5
+
+=== GOTO TABLE ===
+(0,E) = 4
+(0,F) = 2
+(0,T) = 1
+(1,X) = 6
+(2,Y) = 8
+(3,E) = 13
+(3,F) = 11
+(3,T) = 10
+(7,F) = 2
+(7,T) = 15
+(9,F) = 16
+(10,X) = 17
+(11,Y) = 19
+(12,E) = 21
+(12,F) = 11
+(12,T) = 10
+(15,X) = 23
+(16,Y) = 24
+(18,F) = 11
+(18,T) = 25
+(20,F) = 26
+(25,X) = 28
+(26,Y) = 29
+
+Grammar IS LR(1).
+
+Enter input (space-separated):
+--- PARSING TRACE ---
+State=0  NextToken=id
+State=5  NextToken=+
+State=2  NextToken=+
+State=8  NextToken=+
+State=1  NextToken=+
+State=7  NextToken=id
+State=5  NextToken=*
+State=2  NextToken=*
+State=9  NextToken=id
+State=5  NextToken=$
+State=16  NextToken=$
+State=24  NextToken=$
+State=8  NextToken=$
+State=15  NextToken=$
+State=23  NextToken=$
+State=6  NextToken=$
+State=4  NextToken=$
+ACCEPTED.
+anirudh@Ani-LOQ:~$ sed -n '1,200p' run_output.txt
+
+=== ACTION TABLE ===
+(0,() = s3
+(0,id) = s5
+(1,$) = r3
+(1,+) = s7
+(2,$) = r6
+(2,*) = s9
+(2,+) = r6
+(3,() = s12
+(3,id) = s14
+(4,$) = acc
+(5,$) = r8
+(5,*) = r8
+(5,+) = r8
+(6,$) = r1
+(7,() = s3
+(7,id) = s5
+(8,$) = r4
+(8,+) = r4
+(9,() = s3
+(9,id) = s5
+(10,)) = r3
+(10,+) = s18
+(11,)) = r6
+(11,*) = s20
+(11,+) = r6
+(12,() = s12
+(12,id) = s14
+(13,)) = s22
+(14,)) = r8
+(14,*) = r8
+(14,+) = r8
+(15,$) = r3
+(15,+) = s7
+(16,$) = r6
+(16,*) = s9
+(16,+) = r6
+(17,)) = r1
+(18,() = s12
+(18,id) = s14
+(19,)) = r4
+(19,+) = r4
+(20,() = s12
+(20,id) = s14
+(21,)) = s27
+(22,$) = r7
+(22,*) = r7
+(22,+) = r7
+(23,$) = r2
+(24,$) = r5
+(24,+) = r5
+(25,)) = r3
+(25,+) = s18
+(26,)) = r6
+(26,*) = s20
+(26,+) = r6
+(27,)) = r7
+(27,*) = r7
+(27,+) = r7
+(28,)) = r2
+(29,)) = r5
+(29,+) = r5
+
+=== GOTO TABLE ===
+(0,E) = 4
+(0,F) = 2
+(0,T) = 1
+(1,X) = 6
+(2,Y) = 8
+(3,E) = 13
+(3,F) = 11
+(3,T) = 10
+(7,F) = 2
+(7,T) = 15
+(9,F) = 16
+(10,X) = 17
+(11,Y) = 19
+(12,E) = 21
+(12,F) = 11
+(12,T) = 10
+(15,X) = 23
+(16,Y) = 24
+(18,F) = 11
+(18,T) = 25
+(20,F) = 26
+(25,X) = 28
+(26,Y) = 29
+
+Grammar IS LR(1).
+
+Enter input (space-separated):
+--- PARSING TRACE ---
+State=0  NextToken=id
+State=5  NextToken=+
+State=2  NextToken=+
+State=8  NextToken=+
+State=1  NextToken=+
+State=7  NextToken=id
+State=5  NextToken=*
+State=2  NextToken=*
+State=9  NextToken=id
+State=5  NextToken=$
+State=16  NextToken=$
+State=24  NextToken=$
+State=8  NextToken=$
+State=15  NextToken=$
+State=23  NextToken=$
+State=6  NextToken=$
+State=4  NextToken=$
+ACCEPTED.
+anirudh@Ani-LOQ:~$
+

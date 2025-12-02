@@ -1,0 +1,395 @@
+#include <bits/stdc++.h>
+using namespace std;
+
+/* --- Basic configs --- */
+static string EPS = "#";      // epsilon
+static string END = "$";      // end marker
+
+/* --- Utility functions --- */
+static inline string trim(const string &s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == string::npos) return "";
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+/* --- Split RHS by '|' --- */
+vector<string> split_alternatives(const string &rhs) {
+    vector<string> out;
+    string cur;
+    for (char c : rhs) {
+        if (c == '|') {
+            out.push_back(trim(cur));
+            cur.clear();
+        } else cur.push_back(c);
+    }
+    if (!cur.empty()) out.push_back(trim(cur));
+    return out;
+}
+
+/* --- Tokenize RHS properly --- */
+vector<string> tokenize_rhs(const string &rhs) {
+    vector<string> tokens;
+
+    // If user uses spaces, simply split
+    if (rhs.find(' ') != string::npos) {
+        stringstream ss(rhs);
+        string t;
+        while (ss >> t) tokens.push_back(t);
+        return tokens;
+    }
+
+    // No spaces → custom tokenizer
+    string cur;
+    for (size_t i = 0; i < rhs.size();) {
+        char c = rhs[i];
+
+        if (isspace(c)) { i++; continue; }
+
+        // Single-char tokens
+        if (string("()+-*/^=,;").find(c) != string::npos) {
+            if (!cur.empty()) { tokens.push_back(cur); cur.clear(); }
+            tokens.push_back(string(1, c));
+            i++;
+            continue;
+        }
+
+        // Alphanumeric (id, E', Ep, A1 etc.)
+        if (isalnum(c) || c == '\'' || c == '_') {
+            cur.push_back(c);
+            i++;
+            while (i < rhs.size() && (isalnum(rhs[i]) || rhs[i]=='\'' || rhs[i]=='_')) {
+                cur.push_back(rhs[i]);
+                i++;
+            }
+            tokens.push_back(cur);
+            cur.clear();
+            continue;
+        }
+
+        // fallback
+        tokens.push_back(string(1, c));
+        i++;
+    }
+
+    if (!cur.empty()) tokens.push_back(cur);
+
+    return tokens;
+}
+
+/* --- Tokenize input string --- */
+vector<string> tokenize_input(const string &inp) {
+    vector<string> out;
+    string cur;
+
+    for (size_t i = 0; i < inp.size();) {
+        char c = inp[i];
+
+        if (isspace(c)) { i++; continue; }
+
+        // group identifiers
+        if (isalnum(c)) {
+            cur.push_back(c);
+            i++;
+            while (i < inp.size() && isalnum(inp[i])) {
+                cur.push_back(inp[i]);
+                i++;
+            }
+            out.push_back(cur);
+            cur.clear();
+            continue;
+        }
+
+        // single char terminal
+        out.push_back(string(1, c));
+        i++;
+    }
+
+    return out;
+}
+
+/* ====================================================================
+   MAIN PARSER IMPLEMENTATION
+==================================================================== */
+
+int main() {
+
+    cout << "Enter number of productions: ";
+    int n;
+    cin >> n;
+
+    // FIX: Flush input buffer
+    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
+    cout << "Use # for epsilon.\n";
+
+    unordered_map<string, vector<vector<string>>> grammar;
+    set<string> nonterminals;
+    set<string> terminals;
+
+    // --- READ PRODUCTIONS ---
+    for (int i = 0; i < n; i++) {
+        string line;
+        getline(cin, line);
+        line = trim(line);
+        if (line.empty()) { i--; continue; }
+
+        size_t arrow = line.find("->");
+        if (arrow == string::npos) {
+            cerr << "Invalid production: " << line << "\n";
+            return 1;
+        }
+
+        string lhs = trim(line.substr(0, arrow));
+        string rhs_all = trim(line.substr(arrow + 2));
+
+        nonterminals.insert(lhs);
+
+        for (auto &alt : split_alternatives(rhs_all)) {
+            vector<string> rhs = tokenize_rhs(alt);
+            if (rhs.size() == 1 && rhs[0] == EPS)
+                grammar[lhs].push_back({EPS});
+            else
+                grammar[lhs].push_back(rhs);
+        }
+    }
+
+    // --- START SYMBOL ---
+    cout << "Enter start symbol: ";
+    string start;
+    getline(cin, start);
+    start = trim(start);
+
+    if (!nonterminals.count(start)) {
+        cerr << "Start symbol not in grammar.\n";
+        return 1;
+    }
+
+    // --- COLLECT TERMINALS ---
+    for (auto &nt : grammar) {
+        for (auto &rhs : nt.second) {
+            for (auto &sym : rhs) {
+                if (sym == EPS) continue;
+                if (!nonterminals.count(sym)) terminals.insert(sym);
+            }
+        }
+    }
+
+    // FIRST and FOLLOW
+    unordered_map<string, set<string>> FIRST, FOLLOW;
+
+    // FIRST for terminals
+    for (auto &t : terminals) FIRST[t].insert(t);
+    FIRST[EPS].insert(EPS);
+
+    for (auto &nt : nonterminals) FIRST[nt]; // init empty
+
+    // --- COMPUTE FIRST ---
+    bool changed = true;
+    while (changed) {
+        changed = false;
+
+        for (auto &p : grammar) {
+            string A = p.first;
+
+            for (auto &rhs : p.second) {
+                bool allNullable = true;
+
+                for (auto &X : rhs) {
+                    for (auto &t : FIRST[X]) {
+                        if (t != EPS) 
+                            if (FIRST[A].insert(t).second) changed = true;
+                    }
+
+                    if (!FIRST[X].count(EPS)) {
+                        allNullable = false;
+                        break;
+                    }
+                }
+
+                if (allNullable) {
+                    if (FIRST[A].insert(EPS).second) changed = true;
+                }
+            }
+        }
+    }
+
+    // --- COMPUTE FOLLOW ---
+    for (auto &nt : nonterminals) FOLLOW[nt];
+    FOLLOW[start].insert(END);
+
+    changed = true;
+    while (changed) {
+        changed = false;
+
+        for (auto &p : grammar) {
+            string A = p.first;
+            for (auto &rhs : p.second) {
+                int m = rhs.size();
+
+                for (int i = 0; i < m; i++) {
+                    string B = rhs[i];
+                    if (!nonterminals.count(B)) continue;
+
+                    bool allNullable = true;
+
+                    for (int j = i + 1; j < m; j++) {
+                        string X = rhs[j];
+
+                        for (auto &t : FIRST[X]) {
+                            if (t != EPS)
+                                if (FOLLOW[B].insert(t).second) changed = true;
+                        }
+
+                        if (!FIRST[X].count(EPS)) {
+                            allNullable = false;
+                            break;
+                        }
+                    }
+
+                    if (allNullable) {
+                        for (auto &t : FOLLOW[A])
+                            if (FOLLOW[B].insert(t).second) changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- BUILD PARSING TABLE ---
+    unordered_map<string, unordered_map<string, vector<string>>> table;
+    bool conflict = false;
+
+    for (auto &p : grammar) {
+        string A = p.first;
+
+        for (auto &rhs : p.second) {
+            set<string> first_alpha;
+            bool nullable = true;
+
+            for (auto &X : rhs) {
+                for (auto &t : FIRST[X])
+                    if (t != EPS) first_alpha.insert(t);
+
+                if (!FIRST[X].count(EPS)) {
+                    nullable = false;
+                    break;
+                }
+            }
+
+            for (auto &a : first_alpha) {
+                if (table[A].count(a)) conflict = true;
+                table[A][a] = rhs;
+            }
+
+            if (nullable) {
+                for (auto &b : FOLLOW[A]) {
+                    if (table[A].count(b)) conflict = true;
+                    table[A][b] = rhs;
+                }
+            }
+        }
+    }
+
+    // --- PRINT FIRST ---
+    cout << "\nFIRST Sets:\n";
+    for (auto &A : nonterminals) {
+        cout << A << " = { ";
+        for (auto &x : FIRST[A]) cout << x << " ";
+        cout << "}\n";
+    }
+
+    // --- PRINT FOLLOW ---
+    cout << "\nFOLLOW Sets:\n";
+    for (auto &A : nonterminals) {
+        cout << A << " = { ";
+        for (auto &x : FOLLOW[A]) cout << x << " ";
+        cout << "}\n";
+    }
+
+    // --- PRINT TABLE ---
+    cout << "\nLL(1) Parsing Table:\n";
+    for (auto &A : nonterminals) {
+        for (auto &ent : table[A]) {
+            cout << "(" << A << ", " << ent.first << ") = " << A << " -> ";
+            for (auto &x : ent.second) cout << x << " ";
+            cout << "\n";
+        }
+    }
+
+    if (conflict)
+        cout << "\nWarning: Grammar has LL(1) conflicts.\n";
+
+    // --- PARSING ---
+    cout << "\nEnter string to parse: ";
+    string input;
+    getline(cin, input);
+    input = trim(input);
+
+    vector<string> tokens = tokenize_input(input);
+    tokens.push_back(END);
+
+    cout << "\n--- PARSING PROCESS ---\n";
+
+    vector<string> st;
+    st.push_back(END);
+    st.push_back(start);
+
+    size_t ip = 0;
+
+    while (!st.empty()) {
+        string top = st.back();
+        string cur = tokens[ip];
+
+        if (top == cur && top == END) {
+            cout << "String Accepted!\n";
+            return 0;
+        }
+
+        // terminal
+        if (!nonterminals.count(top)) {
+            if (top == cur) {
+                cout << "Matched: " << cur << "\n";
+                st.pop_back();
+                ip++;
+            } else {
+                cout << "Error: expected " << top << ", found " << cur << "\n";
+                return 0;
+            }
+            continue;
+        }
+
+        // nonterminal
+        if (!table[top].count(cur)) {
+            cout << "Error: No rule for (" << top << ", " << cur << ")\n";
+            return 0;
+        }
+
+        auto prod = table[top][cur];
+        cout << top << " -> ";
+        for (auto &x : prod) cout << x << " ";
+        cout << "\n";
+
+        st.pop_back();
+        if (!(prod.size() == 1 && prod[0] == EPS)) {
+            for (int i = prod.size() - 1; i >= 0; i--)
+                st.push_back(prod[i]);
+        }
+    }
+
+    return 0;
+}
+
+—--------------------------------------------
+Input:
+—--------------------------------------------
+Enter number of productions: 5
+E -> T X
+X -> + T X | #
+T -> F Y
+Y -> * F Y | #
+F -> ( E ) | id
+Enter start symbol: E
+Enter string to parse: id+id*id
+
+
